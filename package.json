@@ -1,0 +1,42 @@
+{
+  "name": "@gurupras/log",
+  "version": "0.1.0",
+  "description": "",
+  "main": "index.js",
+  "scripts": {
+    "test": "jest",
+    "debug:test": "node --inspect-brk ./node_modules/.bin/jest --coverage=false"
+  },
+  "repository": {
+    "type": "git",
+    "url": "git+https://github.com/gurupras/node-log.git"
+  },
+  "author": "Guru Prasad Srinivasa",
+  "license": "MIT",
+  "bugs": {
+    "url": "https://github.com/gurupras/node-log/issues"
+  },
+  "homepage": "https://github.com/gurupras/node-log#readme",
+  "devDependencies": {
+    "@babel/core": "^7.9.0",
+    "@babel/preset-env": "^7.9.5",
+    "@types/jest": "^25.2.1",
+    "babel-jest": "^25.3.0",
+    "eslint": "^6.8.0",
+    "eslint-config-standard": "^14.1.1",
+    "eslint-plugin-import": "^2.20.2",
+    "eslint-plugin-jest": "^23.8.2",
+    "eslint-plugin-node": "^11.1.0",
+    "eslint-plugin-promise": "^4.2.1",
+    "eslint-plugin-standard": "^4.0.1",
+    "jest": "^25.3.0",
+    "jest-extended": "^0.11.5"
+  },
+  "dependencies": {
+    "app-root-path": "^3.0.0",
+    "deepmerge": "^4.2.2",
+    "moment": "^2.24.0",
+    "winston": "^3.2.1",
+    "winston-daily-rotate-file": "^4.4.2"
+  }
+}
