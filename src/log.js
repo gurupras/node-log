@@ -9,9 +9,65 @@ const colorizer = colorize()
 
 const TAG_SYMBOL = '__tag__'
 
-// define the custom settings for each transport (file, console)
-var options = {
-  file: {
+function ConsoleLogger (config) {
+  if (!config || typeof config !== 'object') {
+    config = {}
+  }
+  const defaults = {
+    level: 'debug',
+    handleExceptions: true,
+    json: false,
+    colorize: true
+  }
+  const finalConfig = deepmerge(defaults, config)
+
+  return createLogger({
+    prettyPrint: true,
+    format: combine(
+      simple(),
+      printf((msg) => {
+        // Update msg.timestamp to be local
+        msg.timestamp = moment().local().format('YYYY-MM-DD hh:mm:ss.SSS ZZ')
+
+        const splat = msg[Symbol.for('splat')]
+        let obj = {}
+        const result = []
+        if (Array.isArray(splat)) {
+          splat.forEach((entry) => {
+            if (typeof entry === 'object') {
+              obj = deepmerge(obj, entry)
+            } else {
+              result.push(entry)
+            }
+          })
+        } else {
+          console.warn(`splat was not an array: ${JSON.stringify(msg)}`)
+        }
+        const { [TAG_SYMBOL]: tag } = obj
+        delete obj[TAG_SYMBOL]
+        result.unshift([
+          `${msg.timestamp} - ${(msg.level + ':').padEnd(8, ' ')} ${tag.padEnd(
+            20,
+            ' '
+          )} ${msg.message}`
+        ])
+        if (Object.keys(obj).length > 0) {
+          result.push(JSON.stringify(obj))
+        }
+        const string = result.join(' ')
+        return colorizer.colorize(msg.level, string)
+      })
+    ),
+    transports: [new transports.Console(finalConfig)],
+    exitOnError: false // do not exit on handled exceptions
+  })
+}
+
+function FileLogger (config) {
+  if (!config || typeof config !== 'object') {
+    config = {}
+  }
+  const defaults = {
     level: 'debug',
     dirname: `${appRoot}/logs`,
     filename: 'log-%DATE%.log',
@@ -20,65 +76,17 @@ var options = {
     zippedArchive: true,
     maxsize: 10 * 1024 * 1024, // 10MB
     colorize: false
-  },
-  console: {
-    level: 'debug',
-    handleExceptions: true,
-    json: false,
-    colorize: true
   }
+  const finalConfig = deepmerge(defaults, config)
+  return createLogger({
+    transports: [new transports.DailyRotateFile(finalConfig)]
+  })
 }
 
-// instantiate a new Winston Logger with the settings defined above
-const consoleLogger = createLogger({
-  prettyPrint: true,
-  format: combine(
-    simple(),
-    printf((msg) => {
-      // Update msg.timestamp to be local
-      msg.timestamp = moment().local().format('YYYY-MM-DD hh:mm:ss.SSS ZZ')
-
-      const splat = msg[Symbol.for('splat')]
-      let obj = {}
-      const result = []
-      if (Array.isArray(splat)) {
-        splat.forEach((entry) => {
-          if (typeof entry === 'object') {
-            obj = deepmerge(obj, entry)
-          } else {
-            result.push(entry)
-          }
-        })
-      } else {
-        console.warn(`splat was not an array: ${JSON.stringify(msg)}`)
-      }
-      const { [TAG_SYMBOL]: tag } = obj
-      delete obj[TAG_SYMBOL]
-      result.unshift([
-        `${msg.timestamp} - ${(msg.level + ':').padEnd(8, ' ')} ${tag.padEnd(
-          20,
-          ' '
-        )} ${msg.message}`
-      ])
-      if (Object.keys(obj).length > 0) {
-        result.push(JSON.stringify(obj))
-      }
-      const string = result.join(' ')
-      return colorizer.colorize(msg.level, string)
-    })
-  ),
-  transports: [new transports.Console(options.console)],
-  exitOnError: false // do not exit on handled exceptions
-})
-
-const fileLogger = createLogger({
-  transports: [new transports.DailyRotateFile(options.file)]
-})
-
-const loggers = [consoleLogger, fileLogger]
+const globalLoggers = []
 
 class Logger {
-  constructor (tag, defaultLevel = 'info') {
+  constructor (tag, defaultLevel = 'info', loggers = globalLoggers) {
     Object.assign(this, {
       tag,
       defaultLevel
@@ -90,7 +98,7 @@ class Logger {
   }
 
   __log (level, ...args) {
-    const { tag } = this
+    const { tag, loggers } = this
     loggers.forEach((logger) => logger[level](...args, { [TAG_SYMBOL]: tag }))
   }
 
@@ -121,5 +129,7 @@ class Logger {
 
 module.exports = {
   Logger,
-  loggers
+  globalLoggers,
+  ConsoleLogger,
+  FileLogger
 }
