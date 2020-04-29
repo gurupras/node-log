@@ -45,7 +45,6 @@ function ConsoleLogger (config) {
           } else {
             console.warn(`splat was not an array: ${JSON.stringify(msg)}`)
           }
-          debugger
           const { [TAG_SYMBOL]: tag } = obj
           delete obj[TAG_SYMBOL]
           result.unshift([
