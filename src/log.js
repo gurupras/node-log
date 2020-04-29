@@ -30,31 +30,37 @@ function ConsoleLogger (config) {
         msg.timestamp = moment().local().format('YYYY-MM-DD hh:mm:ss.SSS ZZ')
 
         const splat = msg[Symbol.for('splat')]
-        let obj = {}
-        const result = []
-        if (Array.isArray(splat)) {
-          splat.forEach((entry) => {
-            if (typeof entry === 'object') {
-              obj = deepmerge(obj, entry)
-            } else {
-              result.push(entry)
-            }
-          })
+        let string
+        if (splat) {
+          let obj = {}
+          const result = []
+          if (Array.isArray(splat)) {
+            splat.forEach((entry) => {
+              if (typeof entry === 'object') {
+                obj = deepmerge(obj, entry)
+              } else {
+                result.push(entry)
+              }
+            })
+          } else {
+            console.warn(`splat was not an array: ${JSON.stringify(msg)}`)
+          }
+          debugger
+          const { [TAG_SYMBOL]: tag } = obj
+          delete obj[TAG_SYMBOL]
+          result.unshift([
+            `${msg.timestamp} - ${(msg.level + ':').padEnd(8, ' ')} ${tag.padEnd(
+              20,
+              ' '
+            )} ${msg.message}`
+          ])
+          if (Object.keys(obj).length > 0) {
+            result.push(JSON.stringify(obj))
+          }
+          string = result.join(' ')
         } else {
-          console.warn(`splat was not an array: ${JSON.stringify(msg)}`)
+          string = msg.message
         }
-        const { [TAG_SYMBOL]: tag } = obj
-        delete obj[TAG_SYMBOL]
-        result.unshift([
-          `${msg.timestamp} - ${(msg.level + ':').padEnd(8, ' ')} ${tag.padEnd(
-            20,
-            ' '
-          )} ${msg.message}`
-        ])
-        if (Object.keys(obj).length > 0) {
-          result.push(JSON.stringify(obj))
-        }
-        const string = result.join(' ')
         return colorizer.colorize(msg.level, string)
       })
     ),
@@ -89,7 +95,8 @@ class Logger {
   constructor (tag, defaultLevel = 'info', loggers = globalLoggers) {
     Object.assign(this, {
       tag,
-      defaultLevel
+      defaultLevel,
+      loggers
     })
   }
 
