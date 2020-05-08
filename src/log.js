@@ -4,7 +4,7 @@ require('winston-daily-rotate-file')
 const deepmerge = require('deepmerge')
 const moment = require('moment')
 
-const { combine, colorize, simple, printf } = format
+const { combine, colorize, simple, printf, errors } = format
 const colorizer = colorize()
 
 const TAG_SYMBOL = '__tag__'
@@ -24,6 +24,7 @@ function ConsoleLogger (config) {
   return createLogger({
     prettyPrint: true,
     format: combine(
+      errors({ stack: true }),
       simple(),
       printf((msg) => {
         // Update msg.timestamp to be local
@@ -59,6 +60,9 @@ function ConsoleLogger (config) {
           string = result.join(' ')
         } else {
           string = msg.message
+        }
+        if (msg.stack) {
+          string += `\n${msg.stack}`
         }
         return colorizer.colorize(msg.level, string)
       })
