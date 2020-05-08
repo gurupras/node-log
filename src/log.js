@@ -38,7 +38,12 @@ function ConsoleLogger (config) {
           if (Array.isArray(splat)) {
             splat.forEach((entry) => {
               if (typeof entry === 'object') {
-                obj = deepmerge(obj, entry)
+                if (entry.stack) {
+                  const { message, stack } = entry
+                  obj = deepmerge(obj, { message, stack })
+                } else {
+                  obj = deepmerge(obj, entry)
+                }
               } else {
                 result.push(entry)
               }
