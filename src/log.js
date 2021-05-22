@@ -54,7 +54,7 @@ const processFields = msg => {
 
     if (extraFields) {
       extras = deepmerge(extraFields, extras)
-      for (const [k, v] of Object.entries(extraFields)) {
+      for (const [k, v] of Object.entries(extras)) {
         msg[k] = msg[k] || v
       }
     }
