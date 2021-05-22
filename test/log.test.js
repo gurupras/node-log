@@ -118,5 +118,23 @@ describe('log', () => {
         ...extraFields
       })
     })
+    test('Multiple arguments are all logged', async () => {
+      createTestLogger(true, extraFields)
+      const fields = [{ a: 1 }, { b: 2 }]
+      const error = new Error(`timeout at ${Date.now()}`)
+      const text = 'test log'
+      log.info(text, ...fields, error)
+      const [entry] = data
+      expect(entry).toMatchObject({
+        message: text,
+        level: 'info',
+        tag,
+        timestamp: expect.anything(),
+        ...extraFields,
+        ...fields[1],
+        ...fields[2],
+        error: { name: error.name, message: error.message, stack: error.stack }
+      })
+    })
   })
 })
