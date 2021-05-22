@@ -36,9 +36,9 @@ const processFields = msg => {
     if (Array.isArray(splat)) {
       for (const entry of splat) {
         if (typeof entry === 'object') {
-          if (entry.stack) {
-            const { message, stack } = entry
-            obj = deepmerge(obj, { message, stack })
+          if (entry instanceof Error) {
+            const { name, message, stack } = entry
+            obj = deepmerge(obj, { error: { name, message, stack } })
           } else {
             obj = deepmerge(obj, entry)
           }
