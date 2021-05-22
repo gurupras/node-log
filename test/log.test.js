@@ -56,8 +56,8 @@ describe('log', () => {
     log.error('Failure: ', error)
     const str = stringify(data)
     expect(str).toInclude(`Error at: ${timestamp}`)
-    expect(str).toIncludeRepeated('at Object.<anonymous>', 1)
-    expect(str).toIncludeRepeated('at Object.asyncJestTest', 1)
+    expect(str).toInclude('at Object.<anonymous>')
+    expect(str).toInclude('at Object.asyncJestTest')
   })
 
   describe('Object arguments', () => {
