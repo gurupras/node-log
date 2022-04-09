@@ -35,7 +35,7 @@
   "dependencies": {
     "app-root-path": "^3.0.0",
     "deepmerge": "^4.2.2",
-    "moment": "^2.25.3",
+    "moment": "^2.29.2",
     "winston": "^3.2.1",
     "winston-daily-rotate-file": "^4.4.2"
   }
