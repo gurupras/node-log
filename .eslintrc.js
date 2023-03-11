@@ -1,15 +1,14 @@
 module.exports = {
   env: {
-    browser: true,
-    es2021: true
+    commonjs: true,
+    es2021: true,
+    node: true
   },
   extends: [
-    'standard',
-    'plugin:jest/recommended'
+    'standard'
   ],
   parserOptions: {
-    ecmaVersion: 12,
-    sourceType: 'module'
+    ecmaVersion: 'latest'
   },
   rules: {
   }

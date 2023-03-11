@@ -1,7 +1,8 @@
+import fs from 'fs'
+import tmp, { file } from 'tmp'
 import moment from 'moment'
 import { Writable } from 'stream'
-import { transports } from 'winston'
-import { createLogger, Logger } from '../src/log'
+import { createLogger, initialize } from '../src/log'
 
 const tag = 'test-tag'
 
@@ -9,6 +10,8 @@ describe('log', () => {
   let log
   let stream
   let data
+  let stdoutObj
+  let fileObj
 
   function createTestLogger (objectMode, extraFields) {
     stream = new Writable({
@@ -18,46 +21,86 @@ describe('log', () => {
       },
       objectMode
     })
-    log = new Logger(tag, 'debug', createLogger({ stream }, transports.Stream), extraFields)
+    stdoutObj = tmp.fileSync()
+    fileObj = tmp.fileSync()
+    initialize({
+      level: 'silly',
+      stdout: {
+        options: {
+          destination: stdoutObj.fd,
+          colorize: false,
+          hideObject: false
+        }
+      },
+      file: {
+        options: {
+          destination: fileObj.fd
+        }
+      }
+    })
+    log = createLogger(tag, extraFields)
+  }
+
+  async function sync (tmpObj = fileObj, objectMode = true) {
+    await log.flush()
+    await new Promise(resolve => setTimeout(resolve, 200))
+    let content = fs.readFileSync(tmpObj.name, 'utf-8')
+    if (objectMode) {
+      try {
+        content = JSON.parse(content)
+      } catch (e) {
+      }
+    }
+    stream.write(content)
   }
 
   beforeEach(async () => {
     data = []
   })
 
+  afterEach(async () => {
+    stdoutObj.removeCallback()
+    fileObj.removeCallback()
+  })
+
   describe('Basic', () => {
     let entry
-    beforeEach(() => {
+    beforeEach(async () => {
       createTestLogger(true)
       log.info('test')
+      await sync()
       entry = data[0]
     })
     test('Contains tag', async () => {
       expect(entry.tag).toEqual(tag)
     })
-    test('Contains timestamp', async () => {
-      expect(moment(entry.timestamp, 'YYYY-MM-DD hh:mm:ss.SSS ZZ').isValid()).toBeTrue()
+    test('Contains time', async () => {
+      expect(moment(entry.time, 'YYYY-MM-DD hh:mm:ss.SSS ZZ').isValid()).toBeTrue()
     })
-    test('Contains level', async () => {
-      expect(entry.level).toEqual('info')
+    test('Contains levelLabel', async () => {
+      expect(entry.levelLabel).toEqual('info')
     })
-    test('Contains message', async () => {
-      expect(entry.message).toEqual('test')
+    test('Contains msg', async () => {
+      debugger
+      expect(entry.msg).toEqual('test')
     })
   })
 
-  test.each([
-    ['console', () => createTestLogger(false), data => data.join('\n')],
-    ['stream', () => createTestLogger(true), data => JSON.stringify(data)]
-  ])('Error stacks appear in %s', (_, init, stringify) => {
-    init()
-    const timestamp = Date.now()
-    const error = new Error(`Error at: ${timestamp}`)
-    log.error('Failure: ', error)
-    const str = stringify(data)
-    expect(str).toInclude(`Error at: ${timestamp}`)
-    expect(str).toInclude('at Object.<anonymous>')
-    expect(str).toInclude('at Object.asyncJestTest')
+  describe('error stacks', () => {
+    test.each([
+      ['console', () => stdoutObj, () => createTestLogger(false), data => data.join('\n')],
+      ['stream', () => fileObj, () => createTestLogger(true), data => JSON.stringify(data)]
+    ])('Error stacks appear in %s', async (_, objFn, init, stringify) => {
+      init()
+      const timestamp = Date.now()
+      const error = new Error(`Error at: ${timestamp}`)
+      log.error('Failure: ', { err: error })
+      await sync(objFn())
+      const str = stringify(data)
+      expect(str).toInclude(`Error at: ${timestamp}`)
+      expect(str).toInclude('log.test.js:96')
+      expect(str).toInclude('at Object.<anonymous>')
+    })
   })
 
   describe('Object arguments', () => {
@@ -69,14 +112,16 @@ describe('log', () => {
       createTestLogger(false)
       const text = 'test log'
       log.info(text, input)
+      await sync(stdoutObj, false)
       const str = data.join('\n')
-      expect(str).toInclude(JSON.stringify(input))
+      expect(str).toInclude(JSON.stringify(input).slice(1, -1))
     })
 
     test.each(inputs)('%s object arguments show up in stream', async (_, input) => {
       createTestLogger(true)
       const text = 'test log'
       log.info(text, input)
+      await sync(fileObj, true)
       const [entry] = data
       const obj = JSON.parse(JSON.stringify(entry))
       expect(obj).toMatchObject(input)
@@ -85,7 +130,7 @@ describe('log', () => {
 
   describe('Able to add extra fields', () => {
     const extraFields = {
-      hostname: 'testHost',
+      host: 'testHost',
       ip: '1.2.3.4',
       nested: {
         obj: 1
@@ -95,46 +140,54 @@ describe('log', () => {
     const input = { data: 'unique-string' }
 
     test('Fields show up in console', async () => {
-      createTestLogger(false, extraFields)
+      createTestLogger(stdoutObj, extraFields)
       const text = 'test log'
       log.info(text, input)
+      await sync(stdoutObj, false)
       const str = data.join('\n')
       expect(str).toInclude('unique-string')
       for (const [k, v] of Object.entries({ ...input, ...extraFields })) {
         expect(str).toInclude(k)
-        expect(str).toInclude(JSON.stringify(v))
+        expect(str).toInclude(JSON.stringify(v).slice(1, -1))
       }
     })
     test('Fields show up in stream', async () => {
-      createTestLogger(true, extraFields)
+      createTestLogger(fileObj, extraFields)
       const text = 'test log'
       log.info(text, input)
+      await sync()
       const [entry] = data
       expect(entry).toMatchObject({
-        message: text,
-        level: 'info',
+        msg: text,
+        levelLabel: 'info',
         tag,
-        timestamp: expect.anything(),
+        time: expect.anything(),
         ...extraFields
       })
     })
     test('Multiple arguments are all logged', async () => {
       createTestLogger(true, extraFields)
-      const fields = [{ a: 1 }, { b: 2 }]
+      const fields = { a: 1, b: 2 }
       const error = new Error(`timeout at ${Date.now()}`)
       const text = 'test log'
-      log.info(text, ...fields, error)
+      log.error(text, { ...fields, err: error })
+      await sync()
       const [entry] = data
       expect(entry).toMatchObject({
-        message: text,
-        level: 'info',
+        msg: text,
+        levelLabel: 'error',
         tag,
-        timestamp: expect.anything(),
+        time: expect.anything(),
         ...extraFields,
-        ...fields[1],
-        ...fields[2],
-        error: { name: error.name, message: error.message, stack: error.stack }
+        ...fields,
+        err: { message: error.message, stack: error.stack }
       })
+    })
+  })
+
+  describe('Errors', () => {
+    test('Able to log simple errors', async () => {
+
     })
   })
 })
