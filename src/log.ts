@@ -131,7 +131,12 @@ function initialize (config: Config = {}) {
   rootLogger = reverseLogMethods(logger)
 }
 
+function getRootLogger () {
+  return rootLogger
+}
+
 export {
   createLogger,
-  initialize
+  initialize,
+  getRootLogger
 }
