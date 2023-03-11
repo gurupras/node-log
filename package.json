@@ -1,6 +1,6 @@
 {
   "name": "@gurupras/log",
-  "version": "0.5.0",
+  "version": "0.6.0",
   "description": "",
   "main": "dist/log.js",
   "module": "dist/log.mjs",
