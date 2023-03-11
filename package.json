@@ -4,7 +4,7 @@
   "description": "",
   "main": "dist/log.js",
   "module": "dist/log.mjs",
-  "type": "module",
+  "type":"commonjs",
   "types": "dist/log.d.ts",
   "scripts": {
     "build:log": "vite build",
