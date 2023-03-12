@@ -82,7 +82,7 @@ export interface Config {
 }
 
 function initialize (config: Config = {}) {
-  let { level = 'debug', stdout = true, file } = config
+  let { level = 'debug', stdout, file } = config
 
   const targets = []
   if (file) {
