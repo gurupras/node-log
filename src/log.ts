@@ -3,6 +3,7 @@ import deepmerge from 'deepmerge'
 import type PinoPretty from 'pino-pretty'
 import type { SonicBoomOpts } from 'sonic-boom'
 import { format } from 'date-fns'
+import { RotateOpts } from './rotate'
 
 
 export const defaultTimeFormat = 'yyyy-MM-dd hh:mm:ss.SSS zzzz'
@@ -67,6 +68,16 @@ function createLogger (tag: string, extraFields?: any) {
 
 let dummyTargetOpts: pino.TransportTargetOptions<Record<string, any>>
 
+type FileConfig = {
+  level?: Level,
+} & ({
+  target?: '@gurupras/log/rotate',
+  options?: RotateOpts
+} | {
+  target?: 'pino/file',
+  options?: Omit<SonicBoomOpts, 'dest'> & { destination: string | number }
+} | boolean)
+
 export interface Config {
   level?: Level,
   stdout?: {
@@ -74,11 +85,7 @@ export interface Config {
     target?: string,
     options: PinoPretty.PrettyOptions
   } | boolean,
-  file?: {
-    level?: Level,
-    target?: string,
-    options: Omit<SonicBoomOpts, 'dest'> & { destination: string | number }
-  } | boolean
+  file?: FileConfig
 }
 
 function initialize (config: Config = {}) {
@@ -96,7 +103,7 @@ function initialize (config: Config = {}) {
     if (typeof file === 'boolean') {
       file = defaultFileOpts
     }
-    targets.push(deepmerge(defaultFileOpts, file))
+    targets.push(deepmerge(defaultFileOpts, file as any))
   }
 
   if (stdout) {

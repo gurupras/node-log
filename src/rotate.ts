@@ -4,7 +4,7 @@ import fs from 'fs'
 import * as FileStreamRotator from 'file-stream-rotator'
 import type { FileStreamRotatorOptions } from 'file-stream-rotator/lib/types';
 
-type RotateOpts = Omit<FileStreamRotatorOptions, 'frequency'> & {
+export type RotateOpts = Omit<FileStreamRotatorOptions, 'frequency'> & {
   frequency: 'daily' | 'test',
   compress: boolean
 }
