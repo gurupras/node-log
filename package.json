@@ -7,9 +7,10 @@
   "type":"commonjs",
   "types": "dist/log.d.ts",
   "scripts": {
+    "clean": "rm -rf dist",
     "build:log": "vite build",
     "build:rotate": "vite build -c vite.config.rotate.ts",
-    "build": "run-s build:*",
+    "build": "npm run clean && run-p build:*",
     "test": "vitest run",
     "debug:test": "node --inspect-brk ./node_modules/.bin/vitest --coverage=false"
   },

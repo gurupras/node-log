@@ -6,6 +6,7 @@ import dts from 'vite-plugin-dts'
 export default defineConfig({
   build: {
     sourcemap: true,
+    emptyOutDir: false,
     lib: {
       // Could also be a dictionary or array of multiple entry points
       entry: resolve(__dirname, 'src/log.ts'),
