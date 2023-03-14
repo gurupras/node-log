@@ -5,7 +5,6 @@ import type { SonicBoomOpts } from 'sonic-boom'
 import { format } from 'date-fns'
 import { RotateOpts } from './rotate'
 
-
 export const defaultTimeFormat = 'yyyy-MM-dd hh:mm:ss.SSS zzzz'
 
 type Level = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
@@ -17,7 +16,7 @@ let dummyLogger: pino.Logger
 export type Logger = {
   levels: pino.LevelMapping
 
-  silly: reverseLog 
+  silly: reverseLog
   trace: reverseLog
   debug: reverseLog
   info: reverseLog
@@ -40,33 +39,9 @@ export type Logger = {
 
 let rootLogger: Logger
 
-function reverseLogMethods (logger: Logger | pino.Logger): Logger {
-  const methods: Level[] = [
-    'silly',
-    'trace',
-    'debug',
-    'info',
-    'warn',
-    'error',
-    'fatal'
-  ]
-  for (const method of methods) {
-    const origFn = (logger as Logger)[method].bind(logger)
-    ;(logger as Logger)[method] = (msg: string, obj: any) => {
-      if (!obj) {
-        return origFn(msg)
-      }
-      return origFn(obj, msg)
-    }
-  }
-  return logger as Logger
-}
-
 function createLogger (tag: string, extraFields?: any) {
-  return reverseLogMethods(rootLogger.child({ ...extraFields, tag }))
+  return rootLogger.child({ ...extraFields, tag })
 }
-
-let dummyTargetOpts: pino.TransportTargetOptions<Record<string, any>>
 
 type FileConfig = {
   level?: Level,
@@ -139,9 +114,19 @@ function initialize (config: Config = {}) {
       error: 50,
       fatal: 60
     },
-    level
+    level,
+    hooks: {
+      logMethod (args, method) {
+        if (args.length >= 2) {
+          const arg1 = args.shift()
+          const arg2 = args.shift()
+          return method.apply(this, [arg2, arg1, ...args])
+        }
+        return method.apply(this, args)
+      }
+    }
   })
-  rootLogger = reverseLogMethods(logger)
+  rootLogger = logger as any as Logger
 }
 
 function getRootLogger () {
