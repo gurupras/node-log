@@ -1,10 +1,10 @@
 {
   "name": "@gurupras/log",
-  "version": "0.7.0",
+  "version": "0.8.0",
   "description": "",
-  "main": "dist/log.js",
-  "module": "dist/log.mjs",
-  "type":"commonjs",
+  "main": "dist/log.cjs",
+  "module": "dist/log.js",
+  "type":"module",
   "types": "dist/log.d.ts",
   "scripts": {
     "clean": "rm -rf dist",
