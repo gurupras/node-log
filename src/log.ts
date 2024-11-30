@@ -3,7 +3,7 @@ import deepmerge from 'deepmerge'
 import type PinoPretty from 'pino-pretty'
 import type { SonicBoomOpts } from 'sonic-boom'
 import { format } from 'date-fns'
-import { RotateOpts } from './rotate'
+import { RotateOpts } from './rotate.js'
 
 export const defaultTimeFormat = 'yyyy-MM-dd hh:mm:ss.SSS zzzz'
 

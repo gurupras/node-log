@@ -2,7 +2,7 @@ import build from 'pino-abstract-transport'
 import zlib from 'zlib'
 import fs from 'fs'
 import * as FileStreamRotator from 'file-stream-rotator'
-import type { FileStreamRotatorOptions } from 'file-stream-rotator/lib/types';
+import type { FileStreamRotatorOptions } from 'file-stream-rotator/lib/types.js';
 
 export type RotateOpts = Omit<FileStreamRotatorOptions, 'frequency'> & {
   frequency: 'daily' | 'test',

@@ -1,8 +1,8 @@
 import fs from 'fs'
 import tmp from 'tmp'
 import { Writable } from 'stream'
-import { createLogger, initialize } from '../src/log'
-import type { Logger } from '../src/log'
+import { createLogger, initialize } from '../src/log.js'
+import type { Logger } from '../src/log.js'
 import { describe, test, beforeEach, afterEach, expect } from 'vitest'
 import { parse } from 'date-fns'
 
