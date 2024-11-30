@@ -1,4 +1,4 @@
-import pino from 'pino'
+import pino, { ChildLoggerOptions } from 'pino'
 import deepmerge from 'deepmerge'
 import type PinoPretty from 'pino-pretty'
 import type { SonicBoomOpts } from 'sonic-boom'
@@ -39,8 +39,8 @@ export type Logger = {
 
 let rootLogger: Logger
 
-function createLogger (tag: string, extraFields?: any) {
-  return rootLogger.child({ ...extraFields, tag })
+function createLogger (tag: string, extraFields?: any, options?: ChildLoggerOptions) {
+  return rootLogger.child({ ...extraFields, tag }, options)
 }
 
 type FileConfig = {
