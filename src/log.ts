@@ -119,7 +119,20 @@ function initialize (config: Config = {}) {
       logMethod (args, method) {
         if (args.length >= 2) {
           const arg1 = args.shift()
-          const arg2 = args.shift()
+          let arg2 = args.shift()
+          if (arg2 instanceof Error) {
+            arg2 = { error: { message: arg2.message, stack: arg2.stack } }
+          } else if (typeof arg2 === 'object' && arg2 !== null) {
+            // Find any error objects and replace them
+            for (const key in arg2) {
+              if (Object.prototype.hasOwnProperty.call(arg2, key)) {
+                const value = arg2[key]
+                if (value instanceof Error) {
+                  arg2[key] = { message: value.message, stack: value.stack }
+                }
+              }
+            }
+          }
           return method.apply(this, [arg2, arg1, ...args])
         }
         return method.apply(this, args)

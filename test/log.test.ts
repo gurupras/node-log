@@ -1,7 +1,7 @@
 import fs from 'fs'
 import tmp from 'tmp'
 import { Writable } from 'stream'
-import { createLogger, initialize } from '../src/log.js'
+import { createLogger, initialize, getRootLogger } from '../src/log.js'
 import type { Logger } from '../src/log.js'
 import { describe, test, beforeEach, afterEach, expect } from 'vitest'
 import { parse } from 'date-fns'
@@ -44,7 +44,13 @@ describe('log', () => {
   }
 
   async function sync (tmpObj = fileObj, objectMode = true) {
-    log.flush()
+    await new Promise<void>((resolve, reject) => log.flush((err) => {
+      if (err) {
+        reject(err)
+        return
+      }
+      resolve()
+    }))
     await new Promise(resolve => setTimeout(resolve, 200))
     let content = fs.readFileSync(tmpObj.name, 'utf-8')
     if (objectMode) {
@@ -189,7 +195,51 @@ describe('log', () => {
 
   describe('Errors', () => {
     test('Able to log simple errors', async () => {
+      createTestLogger(true)
+      const error = new Error('simple error')
+      log.error('my error', error)
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        msg: 'my error',
+        levelLabel: 'error',
+        tag
+      })
+    })
 
+    test('Able to log error within object', async () => {
+      createTestLogger(true)
+      const error = new Error('simple error')
+      const msg = 'message'
+      const args = {
+        uniqIdx: 1,
+        foo: 'bar',
+        args: [1, 4, '--test'],
+        e: error
+      }
+      log.error(msg, args)
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        msg,
+        ...args,
+        e: {
+          message: error.message,
+          stack: error.stack
+        },
+        levelLabel: 'error',
+        tag
+      })
+    })
+  })
+
+  describe('getRootLogger', () => {
+    test('returns the root logger instance', async () => {
+      createTestLogger(true)
+      const rootLogger = getRootLogger()
+      expect(rootLogger).toBeDefined()
+      expect(rootLogger).toHaveProperty('info')
+      expect(rootLogger).toHaveProperty('error')
     })
   })
 })
