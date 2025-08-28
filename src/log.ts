@@ -7,7 +7,7 @@ import { RotateOpts } from './rotate.js'
 
 export const defaultTimeFormat = 'yyyy-MM-dd hh:mm:ss.SSS zzzz'
 
-type Level = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal';
+type Level = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 
 type reverseLog = (msg: string, ...args: any[]) => void
 

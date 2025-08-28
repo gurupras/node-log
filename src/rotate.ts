@@ -2,7 +2,7 @@ import build from 'pino-abstract-transport'
 import zlib from 'zlib'
 import fs from 'fs'
 import * as FileStreamRotator from 'file-stream-rotator'
-import type { FileStreamRotatorOptions } from 'file-stream-rotator/lib/types.js';
+import type { FileStreamRotatorOptions } from 'file-stream-rotator/lib/types.js'
 
 export type RotateOpts = Omit<FileStreamRotatorOptions, 'frequency'> & {
   frequency: 'daily' | 'test',
@@ -37,7 +37,7 @@ export default async function (opts: RotateOpts) {
       })
     })
   }
-  
+
   return build(source => {
     source.on('data', data => {
       out.write(`${JSON.stringify(data)}\n`)

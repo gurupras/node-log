@@ -30,7 +30,6 @@ export default defineConfig({
   ],
   test: {
     coverage: {
-      provider: 'c8'
     },
     setupFiles: ['./test/testSetup.ts']
   }
