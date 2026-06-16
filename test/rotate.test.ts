@@ -1,0 +1,76 @@
+import { EventEmitter } from 'events'
+import fs from 'fs'
+import os from 'os'
+import path from 'path'
+import { describe, test, expect, vi, beforeEach, afterEach } from 'vitest'
+
+// Holder for the fake rotating stream, referenced from inside the (hoisted) mock.
+const hoisted = vi.hoisted(() => ({ out: null as any }))
+
+vi.mock('file-stream-rotator', () => ({
+  getStream: () => hoisted.out
+}))
+
+// Imported after the mock is registered.
+import rotate from '../src/rotate.js'
+
+// A controllable stand-in for file-stream-rotator's FileStreamRotator, which is
+// an EventEmitter that forwards underlying write-stream errors via 'error'.
+class FakeRotator extends EventEmitter {
+  written: string[] = []
+  ended = false
+  write (str: string) { this.written.push(str) }
+  end () { this.ended = true }
+}
+
+describe('rotate transport error handling', () => {
+  let tmpDir: string
+
+  beforeEach(() => {
+    hoisted.out = new FakeRotator()
+    tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotate-test-'))
+  })
+
+  afterEach(() => {
+    fs.rmSync(tmpDir, { recursive: true, force: true })
+    vi.restoreAllMocks()
+  })
+
+  test('creates the log directory up front', async () => {
+    const logDir = path.join(tmpDir, 'logs')
+    expect(fs.existsSync(logDir)).toBe(false)
+    await rotate({ filename: path.join(logDir, '%DATE%'), frequency: 'daily', compress: false } as any)
+    expect(fs.existsSync(logDir)).toBe(true)
+  })
+
+  test('does not crash when the rotating stream emits an error', async () => {
+    await rotate({ filename: path.join(tmpDir, 'logs', '%DATE%'), frequency: 'daily', compress: false } as any)
+    // An EventEmitter with no 'error' listener throws on emit. With the fix a
+    // listener is attached, so this must not throw.
+    const err = Object.assign(new Error('boom'), { code: 'EACCES' })
+    expect(() => hoisted.out.emit('error', err)).not.toThrow()
+  })
+
+  test('recreates the log directory on an ENOENT during rotation', async () => {
+    const logDir = path.join(tmpDir, 'logs')
+    const missingFile = path.join(logDir, '2026-06-07.log')
+    await rotate({ filename: path.join(logDir, '%DATE%'), frequency: 'daily', compress: false } as any)
+
+    // Simulate the directory disappearing at the rotation boundary.
+    fs.rmSync(logDir, { recursive: true, force: true })
+    expect(fs.existsSync(logDir)).toBe(false)
+
+    const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT', path: missingFile })
+    expect(() => hoisted.out.emit('error', err)).not.toThrow()
+    expect(fs.existsSync(logDir)).toBe(true)
+  })
+
+  test('compress pipeline errors on a missing old file do not crash', async () => {
+    await rotate({ filename: path.join(tmpDir, 'logs', '%DATE%'), frequency: 'daily', compress: true } as any)
+
+    const missingOldFile = path.join(tmpDir, 'logs', 'does-not-exist.log')
+    expect(() => hoisted.out.emit('rotate', missingOldFile)).not.toThrow()
+    // Let the asynchronous read-stream 'error' fire; it must be handled, not thrown.
+    await new Promise(resolve => setTimeout(resolve, 50))
+  })
+})
