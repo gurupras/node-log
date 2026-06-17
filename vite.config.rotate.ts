@@ -20,6 +20,7 @@ export default defineConfig({
         'pino-abstract-transport',
         'zlib',
         'fs',
+        'path',
         'file-stream-rotator'
       ]
     }
