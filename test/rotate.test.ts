@@ -73,4 +73,41 @@ describe('rotate transport error handling', () => {
     // Let the asynchronous read-stream 'error' fire; it must be handled, not thrown.
     await new Promise(resolve => setTimeout(resolve, 50))
   })
+
+  test('compress is non-destructive and idempotent (re-rotate must not lose data)', async () => {
+    const logDir = path.join(tmpDir, 'logs')
+    fs.mkdirSync(logDir, { recursive: true })
+    const oldFile = path.join(logDir, '2026-06-17.log')
+    fs.writeFileSync(oldFile, 'real log data\n'.repeat(500))
+
+    await rotate({ filename: path.join(logDir, '%DATE%'), frequency: 'daily', compress: true } as any)
+
+    // First rotation: compresses + removes the source.
+    hoisted.out.emit('rotate', oldFile)
+    await new Promise(resolve => setTimeout(resolve, 80))
+    const gz = `${oldFile}.gz`
+    expect(fs.existsSync(gz)).toBe(true)
+    const goodSize = fs.statSync(gz).size
+    expect(goodSize).toBeGreaterThan(0)
+    expect(fs.existsSync(oldFile)).toBe(false)
+
+    // Second rotation for the SAME (already-compressed, unlinked) file must be
+    // a no-op -- the good .gz must survive, NOT get truncated to 0 bytes.
+    expect(() => hoisted.out.emit('rotate', oldFile)).not.toThrow()
+    await new Promise(resolve => setTimeout(resolve, 80))
+    expect(fs.existsSync(gz)).toBe(true)
+    expect(fs.statSync(gz).size).toBe(goodSize)
+  })
+
+  test('compress skips empty source files (no .gz, no error)', async () => {
+    const logDir = path.join(tmpDir, 'logs')
+    fs.mkdirSync(logDir, { recursive: true })
+    const emptyFile = path.join(logDir, '2026-06-18.log')
+    fs.writeFileSync(emptyFile, '')
+
+    await rotate({ filename: path.join(logDir, '%DATE%'), frequency: 'daily', compress: true } as any)
+    expect(() => hoisted.out.emit('rotate', emptyFile)).not.toThrow()
+    await new Promise(resolve => setTimeout(resolve, 50))
+    expect(fs.existsSync(`${emptyFile}.gz`)).toBe(false)
+  })
 })

@@ -29,6 +29,10 @@ export default async function (opts: RotateOpts) {
     audit_file: 'logs/audit.json',
     extension: '.log',
     create_symlink: false,
+    // Flush the old stream on rotation instead of destroy()-ing it, so the
+    // last buffered chunk of the day's log is written to disk before we
+    // compress it (file-stream-rotator defaults end_stream to false == destroy).
+    end_stream: true,
     compress: true
   }
 
@@ -55,24 +59,51 @@ export default async function (opts: RotateOpts) {
 
   if (finalOpts.compress) {
     out.on('rotate', (oldFile) => {
-      // TODO: Handle auditing
+      // Only compress a source that exists and has content. This makes the
+      // handler idempotent: if 'rotate' fires again for an already-compressed
+      // (and therefore unlinked) file -- e.g. overlapping processes sharing one
+      // log dir, or a re-run rotation -- we skip instead of truncating the good
+      // .gz to 0 bytes and losing the day's logs.
+      let size: number
+      try {
+        size = fs.statSync(oldFile).size
+      } catch {
+        return // source gone -> nothing to compress
+      }
+      if (size === 0) {
+        return // empty -> nothing worth compressing
+      }
+
+      // Compress to a temp file and only move it into place on success, so we
+      // never clobber an existing good .gz and never leave a 0-byte one behind.
+      const tmp = `${oldFile}.gz.tmp`
       const gzip = zlib.createGzip()
       const input = fs.createReadStream(oldFile)
-      const output = fs.createWriteStream(`${oldFile}.gz`)
-      // Every stream in this pipeline is an EventEmitter, so an unhandled
-      // 'error' (e.g. the old file already gone) would likewise crash the
-      // transport worker. Swallow + log each stage.
+      const output = fs.createWriteStream(tmp)
+      // Every stream here is an EventEmitter, so an unhandled 'error' would
+      // crash the transport worker. Swallow + log each stage and clean up the
+      // partial temp file; the source .log is left untouched (recoverable).
       const onError = (stage: string) => (err: unknown) => {
         console.error(`[@gurupras/log/rotate] failed to compress ${oldFile} (${stage})`, err)
+        fs.unlink(tmp, () => {})
       }
       input.on('error', onError('read'))
       gzip.on('error', onError('gzip'))
       output.on('error', onError('write'))
       input.pipe(gzip).pipe(output).on('finish', () => {
-        fs.unlink(oldFile, (err) => {
-          if (err) {
-            console.error(err)
+        // The compressed data is now fully written. Atomically move it into
+        // place, then -- and only then -- remove the source.
+        fs.rename(tmp, `${oldFile}.gz`, (renameErr) => {
+          if (renameErr) {
+            console.error(`[@gurupras/log/rotate] failed to finalize ${oldFile}.gz`, renameErr)
+            fs.unlink(tmp, () => {})
+            return
           }
+          fs.unlink(oldFile, (err) => {
+            if (err) {
+              console.error(err)
+            }
+          })
         })
       })
     })
