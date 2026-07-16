@@ -103,7 +103,6 @@ describe('log', () => {
       expect(entry.levelLabel).toEqual('info')
     })
     test('Contains msg', async () => {
-      debugger
       expect(entry.msg).toEqual('test')
     })
   })
