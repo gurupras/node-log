@@ -46,17 +46,33 @@ let rootLogger: Logger
 // or not those are enumerable; `name` lives on the prototype, so it is copied separately.
 function serializeError (e: Error, seen = new Set<Error>()): Record<string, any> {
   if (seen.has(e)) {
-    // A `cause` chain can loop back on itself; recursing would overflow the stack inside
-    // the logger and take down the caller over nothing more than a log line.
+    // Already on the path being serialized: a `cause` chain that loops back on itself.
+    // Recursing would overflow the stack inside the logger and take down the caller over
+    // nothing more than a log line.
     return { name: e.name, message: e.message }
   }
   seen.add(e)
 
   const serialized: Record<string, any> = { name: e.name }
   for (const key of Object.getOwnPropertyNames(e)) {
-    const value = (e as any)[key]
-    serialized[key] = value instanceof Error ? serializeError(value, seen) : value
+    let value: any
+    try {
+      value = (e as any)[key]
+    } catch (readError) {
+      // This read invokes own accessors, and some clients attach lazily-computed ones that
+      // throw. Reporting an error must not raise a second one out of the caller's catch.
+      serialized[key] = `<unreadable: ${(readError as Error)?.message ?? readError}>`
+      continue
+    }
+    // Errors hide inside containers too -- AggregateError keeps its sub-errors in `errors`,
+    // and those carry the whole diagnostic payload of a Promise.any failure.
+    serialized[key] = replaceErrors(value, 0, seen)
   }
+
+  // Unwind: `seen` tracks the current path, not every error ever visited. Leaving `e` in it
+  // would make a second, non-cyclic reference to the same error -- the same root under both
+  // `cause` and `originalError`, say -- look like a cycle and silently lose its stack.
+  seen.delete(e)
   return serialized
 }
 
@@ -64,9 +80,11 @@ function isPlainObject (value: any): value is Record<string, any> {
   return typeof value === 'object' && value !== null
 }
 
-// Only object literals and arrays are walked. Class instances are left alone on purpose:
-// copying them would strip their prototype, and spreading a Date/Map/Set yields `{}` —
-// destroying the very values we are trying to log.
+// Anything object-shaped is walked, so an Error cannot hide inside a class instance used as
+// context. Two exceptions: a value defining its own JSON form (Date, Buffer, ...) must reach
+// the transport intact, since copying it would strip the toJSON that produces that form; and
+// a typed array is index-keyed and cannot hold an Error, so walking it would visit every
+// element to find nothing.
 function isWalkable (value: any): boolean {
   if (value === null || typeof value !== 'object') {
     return false
@@ -74,22 +92,30 @@ function isWalkable (value: any): boolean {
   if (Array.isArray(value)) {
     return true
   }
-  const proto = Object.getPrototypeOf(value)
-  return proto === Object.prototype || proto === null
+  return typeof value.toJSON !== 'function' && !ArrayBuffer.isView(value)
+}
+
+// Class instances collapse to plain objects rather than being cloned through their prototype.
+// Only own enumerable properties survive JSON serialization, so the emitted record is
+// identical, and rebuilding the prototype risks assigning through an accessor with no setter.
+function shallowCopy (value: any): any {
+  return Array.isArray(value) ? value.slice() : { ...value }
 }
 
 // An Error nested inside a logged object JSON-stringifies to `{}` — message and stack both
 // vanish — so they are replaced with serializable objects first. The walk is depth-capped
-// rather than cycle-tracked: a self-referential object simply bottoms out at the cap, which
-// costs nothing on the hot path and cannot loop.
-const MAX_ERROR_SCAN_DEPTH = 4
+// rather than cycle-tracked: a self-referential object bottoms out at the cap, which cannot
+// loop and costs nothing on the hot path. An Error is serialized before the cap is consulted,
+// so the cap only strands one nested deeper than this — deep enough for realistic context
+// objects, and the ceiling is documented rather than silent.
+const MAX_ERROR_SCAN_DEPTH = 8
 
 // Copy-on-write. The caller's object is never mutated (logging must not be observable to the
 // code doing the logging), but an object with no Errors in it is returned as-is, so the common
-// case allocates nothing.
-function replaceErrors (value: any, depth: number): any {
+// case allocates nothing -- including `seen`, which only materializes once an Error is found.
+function replaceErrors (value: any, depth: number, seen?: Set<Error>): any {
   if (value instanceof Error) {
-    return serializeError(value)
+    return serializeError(value, seen)
   }
   if (depth >= MAX_ERROR_SCAN_DEPTH || !isWalkable(value)) {
     return value
@@ -98,10 +124,10 @@ function replaceErrors (value: any, depth: number): any {
   if (Array.isArray(value)) {
     let copy = value
     for (let i = 0; i < value.length; i++) {
-      const next = replaceErrors(value[i], depth + 1)
+      const next = replaceErrors(value[i], depth + 1, seen)
       if (next !== value[i]) {
         if (copy === value) {
-          copy = value.slice()
+          copy = shallowCopy(value)
         }
         copy[i] = next
       }
@@ -111,10 +137,10 @@ function replaceErrors (value: any, depth: number): any {
 
   let copy = value
   for (const key of Object.keys(value)) {
-    const next = replaceErrors(value[key], depth + 1)
+    const next = replaceErrors(value[key], depth + 1, seen)
     if (next !== value[key]) {
       if (copy === value) {
-        copy = { ...value }
+        copy = shallowCopy(value)
       }
       copy[key] = next
     }

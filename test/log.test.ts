@@ -379,6 +379,74 @@ describe('log', () => {
       expect(entry).toMatchObject({ msg: 'my error', a: 1 })
     })
 
+    test('AggregateError sub-errors are serialized', async () => {
+      createTestLogger(true)
+      const sub1 = new Error('sub1')
+      const sub2 = new Error('sub2')
+      log.error('agg', new AggregateError([sub1, sub2], 'all failed'))
+      await sync()
+      const [entry] = data as any[]
+      // The sub-errors are the entire diagnostic payload of a Promise.any failure.
+      expect(entry.error.message).toBe('all failed')
+      expect(entry.error.errors).toMatchObject([
+        { message: 'sub1', stack: sub1.stack },
+        { message: 'sub2', stack: sub2.stack }
+      ])
+    })
+
+    test('Errors held by a class instance are serialized', async () => {
+      createTestLogger(true)
+      const error = new Error('inside class')
+      class Ctx {
+        reason = error
+        id = 7
+      }
+      log.error('my error', new Ctx())
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.id).toBe(7)
+      expect(entry.reason).toMatchObject({ message: 'inside class', stack: error.stack })
+    })
+
+    test('The same error referenced twice keeps its stack both times', async () => {
+      createTestLogger(true)
+      const root = new Error('root cause')
+      const error = new Error('outer', { cause: root })
+      ;(error as any).originalError = root
+      log.error('my error', error)
+      await sync()
+      const [entry] = data as any[]
+      // A diamond is not a cycle: the second reference must not be truncated.
+      expect(entry.error.cause).toMatchObject({ message: 'root cause', stack: root.stack })
+      expect(entry.error.originalError).toMatchObject({ message: 'root cause', stack: root.stack })
+    })
+
+    test('A throwing getter on an error does not escape the log call', async () => {
+      createTestLogger(true)
+      const error = new Error('with bad getter')
+      Object.defineProperty(error, 'detail', {
+        enumerable: true,
+        get () { throw new Error('unavailable') }
+      })
+      expect(() => log.error('my error', error)).not.toThrow()
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.error.message).toBe('with bad getter')
+      expect(entry.error.detail).toContain('unreadable')
+    })
+
+    test('Values defining their own JSON form are left intact', async () => {
+      createTestLogger(true)
+      const error = new Error('boom')
+      const date = new Date('2026-07-15T00:00:00.000Z')
+      // The error forces the copy-on-write path; the Date must still survive it.
+      log.error('my error', { when: date, err: error })
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.when).toBe('2026-07-15T00:00:00.000Z')
+      expect(entry.err).toMatchObject({ message: 'boom', stack: error.stack })
+    })
+
     test('Able to log error within object', async () => {
       createTestLogger(true)
       const error = new Error('simple error')
