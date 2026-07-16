@@ -89,16 +89,37 @@ log.error('request failed', { requestId }, err)
 
 If `error` is already taken, subsequent errors land on `error2`, `error3`, and so on.
 
+### Aggregated errors
+
+`AggregateError`'s sub-errors — the whole diagnostic payload of a `Promise.any` failure — are
+serialized too, rather than collapsing to `[{}]`:
+
+```js
+log.error('all upstreams failed', new AggregateError([e1, e2], 'all failed'))
+// error: { name: 'AggregateError', message: 'all failed', errors: [ {...}, {...} ] }
+```
+
+An error referenced twice (say the same root under both `cause` and `originalError`) is serialized
+in full both times; only a genuine cycle is collapsed, to `{ name, message }`.
+
 ### Nesting, and what is left alone
 
-Errors are replaced anywhere in the merge object, including inside arrays, **up to a depth of 4**.
-Deeper than that, an error still serializes to `{}` — flatten it, or attach it nearer the top.
+Errors are replaced anywhere in the merge object, including inside arrays and class instances,
+**up to a depth of 8**. Deeper than that an error still serializes to `{}` — flatten it, or attach
+it nearer the top.
 
-Only object literals and arrays are traversed. Class instances — `Date`, `Map`, custom classes — are
-passed through untouched, since copying them would strip their prototype and reduce them to `{}`.
+Values that define their own JSON form (`Date`, `Buffer`, anything with a `toJSON`) are passed
+through untouched, so they reach the transport intact. Typed arrays are skipped as well: they are
+index-keyed and cannot contain an error. Everything else object-shaped is traversed, so an error
+cannot hide inside a context object.
 
 Logging never mutates the object you pass in: the error replacement is copy-on-write, and an object
-containing no errors is forwarded as-is.
+containing no errors is forwarded as-is. A class instance containing an error is copied to a plain
+object — only own enumerable properties survive JSON serialization, so the emitted record is the
+same either way.
+
+A property whose getter throws is recorded as `<unreadable: ...>` rather than raising out of the
+log call: reporting an error must not raise a second one from inside the caller's catch block.
 
 ## Performance
 
@@ -117,17 +138,14 @@ reads it. Measured on Node 24, output to `/dev/null`:
 | `log.error('msg', errWithCause)` | 2 | ~68µs |
 
 Finding the errors to serialize means walking the logged object, which costs **~20ns per node
-visited**, to a maximum depth of 4. That is charged on every call, whether or not an error is
+visited**, to a maximum depth of 8. That is charged on every call, whether or not an error is
 found — but it is proportional to what you actually log:
 
 | Merge object | Cost of the walk |
 | --- | --- |
-| `{ a, b }` | +79ns (+1.8%) |
-| 4-deep chain | +226ns (+5%) |
-| 8-deep chain | +166ns (+3.6% — the depth cap stops the walk at 4) |
-| ~40-node payload | +509ns (+8%) |
-| `{ list: [100 numbers] }` | +1.8µs (+35%) |
-| `{ list: [50 objects] }` | +4µs (+50%) |
+| `{ a, b }` | not measurable |
+| ~40-node payload | +700ns (+11%) |
+| `{ list: [50 objects] }` | +3.7µs (+47%) |
 
 Depth is bounded by the cap; breadth is not. Large arrays are therefore the worst case — if you log
 100-element arrays on a hot path and never put errors in them, that walk is pure overhead. It is
