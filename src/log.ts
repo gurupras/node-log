@@ -191,10 +191,16 @@ function initialize (config: Config = {}) {
       return `,"time":"${now}"`
     },
     serializers: {
-      // Errors are already serialized by the logMethod hook above. pino's default `err`
-      // serializer would re-process the result, flattening the cause chain into the message
-      // ('outer: inner') and dropping the cause object, and labelling it `type: 'Object'`.
-      err: value => value
+      // pino's default `err` serializer would re-process what the logMethod hook already
+      // serialized, flattening the cause chain into the message ('outer: inner'), dropping
+      // the cause object, and labelling it `type: 'Object'` — so it cannot be used as-is.
+      //
+      // But it cannot simply be replaced with a passthrough either: the hook does not see
+      // every Error that reaches pino. Single-argument calls (`log.error(err)`) return early
+      // from the hook, and child-logger bindings (`createLogger(tag, { err })`) bypass it
+      // altogether. Both arrive here still raw, and a passthrough would JSON-stringify them
+      // to `{}`. Serialize whatever is still an Error; leave the hook's output alone.
+      err: value => value instanceof Error ? serializeError(value) : value
     },
     transport: {
       targets

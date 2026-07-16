@@ -280,6 +280,33 @@ describe('log', () => {
       })
     })
 
+    test('A bare error logged as the only argument keeps its stack', async () => {
+      createTestLogger(true)
+      const error = Object.assign(new Error('single arg'), { code: 'E_SINGLE' })
+      // args.length < 2, so the logMethod hook never sees this: pino wraps it as `err`
+      // and applies the serializer directly.
+      log.error(error)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.err).toMatchObject({
+        name: 'Error',
+        message: 'single arg',
+        stack: error.stack,
+        code: 'E_SINGLE'
+      })
+    })
+
+    test('An error bound into a child logger keeps its stack', async () => {
+      createTestLogger(true)
+      const error = new Error('bound error')
+      // Child bindings bypass the logMethod hook entirely.
+      const child = createLogger('child-tag', { err: error })
+      child.info('bound')
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.err).toMatchObject({ name: 'Error', message: 'bound error', stack: error.stack })
+    })
+
     test('Errors nested deeper than one level are serialized', async () => {
       createTestLogger(true)
       const error = new Error('deep error')
