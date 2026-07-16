@@ -5,7 +5,9 @@ import type { SonicBoomOpts } from 'sonic-boom'
 import { format } from 'date-fns'
 import { RotateOpts } from './rotate.js'
 
-export const defaultTimeFormat = 'yyyy-MM-dd hh:mm:ss.SSS zzzz'
+// 'HH' (00-23), not 'hh' (01-12) — without a meridiem token a 12-hour clock renders
+// 13:00-23:59 identically to 01:00-11:59, and midnight as 12:00.
+export const defaultTimeFormat = 'yyyy-MM-dd HH:mm:ss.SSS zzzz'
 
 type Level = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 

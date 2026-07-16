@@ -1,10 +1,10 @@
 import fs from 'fs'
 import tmp from 'tmp'
 import { Writable } from 'stream'
-import { createLogger, initialize, getRootLogger } from '../src/log.js'
+import { createLogger, initialize, getRootLogger, defaultTimeFormat } from '../src/log.js'
 import type { Logger } from '../src/log.js'
 import { describe, test, beforeEach, afterEach, expect } from 'vitest'
-import { parse } from 'date-fns'
+import { format, isValid, parse } from 'date-fns'
 
 const tag = 'test-tag'
 
@@ -83,8 +83,20 @@ describe('log', () => {
       expect(entry.tag).toEqual(tag)
     })
     test('Contains time', async () => {
-      console.log(entry.time)
-      expect(() => parse(entry.time, 'yyyy-MM-dd hh:mm:ss.SSS xxxx', new Date())).not.toThrow()
+      // date-fns cannot parse the 'zzzz' zone ('GMT-04:00') that defaultTimeFormat emits,
+      // so assert on the datetime portion; the zone suffix is covered by the format itself.
+      const [datetime] = entry.time.split(' GMT')
+      const parsed = parse(datetime, 'yyyy-MM-dd HH:mm:ss.SSS', new Date())
+      expect(isValid(parsed)).toBe(true)
+    })
+
+    test('Renders the hour on a 24-hour clock', () => {
+      // A 12-hour clock ('hh') with no meridiem token renders 23:03 as '11:03' and
+      // midnight as '12:05', which silently corrupts every afternoon/evening timestamp
+      // and makes logs impossible to correlate across services.
+      expect(format(new Date(2026, 6, 14, 23, 3, 21), defaultTimeFormat)).toContain('2026-07-14 23:03:21')
+      expect(format(new Date(2026, 6, 15, 0, 5, 0), defaultTimeFormat)).toContain('2026-07-15 00:05:00')
+      expect(format(new Date(2026, 6, 15, 12, 5, 0), defaultTimeFormat)).toContain('2026-07-15 12:05:00')
     })
     test('Contains levelLabel', async () => {
       expect(entry.levelLabel).toEqual('info')
