@@ -213,10 +213,143 @@ describe('log', () => {
       await sync()
       const [entry] = data
       expect(entry).toMatchObject({
+        tag,
         msg: 'my error',
         levelLabel: 'error',
-        tag
+        error: { message: error.message, stack: error.stack },
       })
+    })
+
+    test('Errors are properly logged even if they are third or higher arg', async () => {
+      createTestLogger(true)
+      const error = new Error('simple error')
+      log.error('my error', { foo: 'bar' }, error)
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        tag,
+        msg: 'my error',
+        levelLabel: 'error',
+        foo: 'bar',
+        error: { message: error.message, stack: error.stack },
+      })
+    })
+
+    test('Custom properties on an error are preserved', async () => {
+      createTestLogger(true)
+      const error = Object.assign(new Error('request failed'), { code: 'ECONNREFUSED', statusCode: 502 })
+      log.error('my error', error)
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        error: {
+          name: 'Error',
+          message: 'request failed',
+          stack: error.stack,
+          code: 'ECONNREFUSED',
+          statusCode: 502
+        }
+      })
+    })
+
+    test('Error causes are serialized recursively', async () => {
+      createTestLogger(true)
+      const root = new Error('socket closed')
+      const error = new Error('request failed', { cause: root })
+      log.error('my error', error)
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        error: {
+          message: 'request failed',
+          cause: { message: 'socket closed', stack: root.stack }
+        }
+      })
+    })
+
+    test('A self-referential cause chain does not overflow the stack', async () => {
+      createTestLogger(true)
+      const error = new Error('loops')
+      ;(error as any).cause = error
+      expect(() => log.error('my error', error)).not.toThrow()
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        msg: 'my error',
+        error: { message: 'loops', cause: { message: 'loops' } }
+      })
+    })
+
+    test('Errors nested deeper than one level are serialized', async () => {
+      createTestLogger(true)
+      const error = new Error('deep error')
+      log.error('my error', { meta: { inner: { err: error } } })
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        meta: { inner: { err: { message: 'deep error', stack: error.stack } } }
+      })
+    })
+
+    test('Errors inside arrays are serialized', async () => {
+      createTestLogger(true)
+      const error = new Error('array error')
+      log.error('my error', { list: [{ err: error }] })
+      await sync()
+      const [entry] = data
+      expect(entry).toMatchObject({
+        list: [{ err: { message: 'array error', stack: error.stack } }]
+      })
+    })
+
+    test('An error under the `err` key keeps its cause and is not relabelled', async () => {
+      createTestLogger(true)
+      const root = new Error('socket closed')
+      const error = new Error('request failed', { cause: root })
+      log.error('my error', { err: error })
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.err).toMatchObject({
+        name: 'Error',
+        message: 'request failed',
+        cause: { message: 'socket closed', stack: root.stack }
+      })
+      // pino's default `err` serializer flattens the chain to 'request failed: socket closed'
+      // and stamps type: 'Object'; neither should survive.
+      expect(entry.err.type).toBeUndefined()
+      expect(entry.err.message).toBe('request failed')
+    })
+
+    test('Logging does not mutate the caller\'s object', async () => {
+      createTestLogger(true)
+      const error = new Error('boom')
+      const arg = { a: 1, err: error, nested: { deep: error } }
+      log.error('my error', arg)
+      await sync()
+      expect(arg.err).toBe(error)
+      expect(arg.err).toBeInstanceOf(Error)
+      expect(arg.nested.deep).toBeInstanceOf(Error)
+    })
+
+    test('Non-plain objects are passed through intact', async () => {
+      createTestLogger(true)
+      const date = new Date('2026-07-15T00:00:00.000Z')
+      log.error('my error', { when: date, list: [1, 2] })
+      await sync()
+      const [entry] = data as any[]
+      // Spreading a Date would yield {}, destroying the value.
+      expect(entry.when).toBe('2026-07-15T00:00:00.000Z')
+      expect(entry.list).toEqual([1, 2])
+    })
+
+    test('A self-referential object does not hang the logger', async () => {
+      createTestLogger(true)
+      const arg: any = { a: 1 }
+      arg.self = arg
+      expect(() => log.error('my error', arg)).not.toThrow()
+      await sync()
+      const [entry] = data as any[]
+      expect(entry).toMatchObject({ msg: 'my error', a: 1 })
     })
 
     test('Able to log error within object', async () => {
@@ -245,24 +378,6 @@ describe('log', () => {
     })
   })
 
-  describe('getRootLogger', () => {
-    test('returns the root logger instance', async () => {
-      createTestLogger(true)
-      const rootLogger = getRootLogger()
-      expect(rootLogger).toBeDefined()
-      expect(rootLogger).toHaveProperty('info')
-      expect(rootLogger).toHaveProperty('error')
-    })
-  })
-})
-
-interface LogMessage extends Record<string, any> {
-  tag: string
-  time: string
-  msg: string
-  level: number
-  levelLabel: string
-}
   describe('mixin', () => {
     test('Fields from a user-supplied mixin are merged into every record', async () => {
       createTestLogger(true, undefined, { mixin: () => ({ requestId: 'abc-123' }) })
@@ -282,3 +397,21 @@ interface LogMessage extends Record<string, any> {
     })
   })
 
+  describe('getRootLogger', () => {
+    test('returns the root logger instance', async () => {
+      createTestLogger(true)
+      const rootLogger = getRootLogger()
+      expect(rootLogger).toBeDefined()
+      expect(rootLogger).toHaveProperty('info')
+      expect(rootLogger).toHaveProperty('error')
+    })
+  })
+})
+
+interface LogMessage extends Record<string, any> {
+  tag: string
+  time: string
+  msg: string
+  level: number
+  levelLabel: string
+}

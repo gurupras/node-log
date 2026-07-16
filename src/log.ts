@@ -41,6 +41,87 @@ export type Logger = {
 
 let rootLogger: Logger
 
+// `message`/`stack` are non-enumerable on Error, so a spread yields `{}` for a stock error.
+// Own-property names catch them along with custom fields (`code`, `statusCode`, ...) whether
+// or not those are enumerable; `name` lives on the prototype, so it is copied separately.
+function serializeError (e: Error, seen = new Set<Error>()): Record<string, any> {
+  if (seen.has(e)) {
+    // A `cause` chain can loop back on itself; recursing would overflow the stack inside
+    // the logger and take down the caller over nothing more than a log line.
+    return { name: e.name, message: e.message }
+  }
+  seen.add(e)
+
+  const serialized: Record<string, any> = { name: e.name }
+  for (const key of Object.getOwnPropertyNames(e)) {
+    const value = (e as any)[key]
+    serialized[key] = value instanceof Error ? serializeError(value, seen) : value
+  }
+  return serialized
+}
+
+function isPlainObject (value: any): value is Record<string, any> {
+  return typeof value === 'object' && value !== null
+}
+
+// Only object literals and arrays are walked. Class instances are left alone on purpose:
+// copying them would strip their prototype, and spreading a Date/Map/Set yields `{}` —
+// destroying the very values we are trying to log.
+function isWalkable (value: any): boolean {
+  if (value === null || typeof value !== 'object') {
+    return false
+  }
+  if (Array.isArray(value)) {
+    return true
+  }
+  const proto = Object.getPrototypeOf(value)
+  return proto === Object.prototype || proto === null
+}
+
+// An Error nested inside a logged object JSON-stringifies to `{}` — message and stack both
+// vanish — so they are replaced with serializable objects first. The walk is depth-capped
+// rather than cycle-tracked: a self-referential object simply bottoms out at the cap, which
+// costs nothing on the hot path and cannot loop.
+const MAX_ERROR_SCAN_DEPTH = 4
+
+// Copy-on-write. The caller's object is never mutated (logging must not be observable to the
+// code doing the logging), but an object with no Errors in it is returned as-is, so the common
+// case allocates nothing.
+function replaceErrors (value: any, depth: number): any {
+  if (value instanceof Error) {
+    return serializeError(value)
+  }
+  if (depth >= MAX_ERROR_SCAN_DEPTH || !isWalkable(value)) {
+    return value
+  }
+
+  if (Array.isArray(value)) {
+    let copy = value
+    for (let i = 0; i < value.length; i++) {
+      const next = replaceErrors(value[i], depth + 1)
+      if (next !== value[i]) {
+        if (copy === value) {
+          copy = value.slice()
+        }
+        copy[i] = next
+      }
+    }
+    return copy
+  }
+
+  let copy = value
+  for (const key of Object.keys(value)) {
+    const next = replaceErrors(value[key], depth + 1)
+    if (next !== value[key]) {
+      if (copy === value) {
+        copy = { ...value }
+      }
+      copy[key] = next
+    }
+  }
+  return copy
+}
+
 function createLogger (tag: string, extraFields?: any, options?: ChildLoggerOptions) {
   return rootLogger.child({ ...extraFields, tag }, options)
 }
@@ -109,6 +190,12 @@ function initialize (config: Config = {}) {
       const now = format(new Date(), defaultTimeFormat)
       return `,"time":"${now}"`
     },
+    serializers: {
+      // Errors are already serialized by the logMethod hook above. pino's default `err`
+      // serializer would re-process the result, flattening the cause chain into the message
+      // ('outer: inner') and dropping the cause object, and labelling it `type: 'Object'`.
+      err: value => value
+    },
     transport: {
       targets
     },
@@ -124,25 +211,36 @@ function initialize (config: Config = {}) {
     level,
     hooks: {
       logMethod (args, method) {
-        if (args.length >= 2) {
-          const arg1 = args.shift()
-          let arg2 = args.shift()
-          if (arg2 instanceof Error) {
-            arg2 = { error: { message: arg2.message, stack: arg2.stack } }
-          } else if (typeof arg2 === 'object' && arg2 !== null) {
-            // Find any error objects and replace them
-            for (const key in arg2) {
-              if (Object.prototype.hasOwnProperty.call(arg2, key)) {
-                const value = arg2[key]
-                if (value instanceof Error) {
-                  arg2[key] = { message: value.message, stack: value.stack }
-                }
-              }
-            }
-          }
-          return method.apply(this, [arg2, arg1, ...args])
+        if (args.length < 2) {
+          return method.apply(this, args)
         }
-        return method.apply(this, args)
+        const msg = args.shift()
+        const rawMergeObj = args.shift()
+
+        // A bare Error becomes the `error` field rather than the merge object itself,
+        // which would otherwise splatter `message`/`stack`/`name` onto the log record.
+        let mergeObj = rawMergeObj instanceof Error
+          ? { error: serializeError(rawMergeObj) }
+          : replaceErrors(rawMergeObj, 0)
+
+        // pino treats everything past the merge object as printf interpolation args, so an
+        // Error here is dropped unless the message happens to carry a format specifier.
+        const rest = []
+        for (const arg of args) {
+          if (arg instanceof Error && isPlainObject(mergeObj)) {
+            if (mergeObj === rawMergeObj) {
+              mergeObj = { ...mergeObj }
+            }
+            let key = 'error'
+            for (let i = 2; key in mergeObj; i++) {
+              key = `error${i}`
+            }
+            mergeObj[key] = serializeError(arg)
+          } else {
+            rest.push(arg)
+          }
+        }
+        return method.apply(this, [mergeObj, msg, ...rest])
       }
     }
   })
