@@ -25,10 +25,15 @@ class FakeRotator extends EventEmitter {
 
 describe('rotate transport error handling', () => {
   let tmpDir: string
+  let errorSpy: ReturnType<typeof vi.spyOn>
 
   beforeEach(() => {
     hoisted.out = new FakeRotator()
     tmpDir = fs.mkdtempSync(path.join(os.tmpdir(), 'rotate-test-'))
+    // The transport reports rotation errors via console.error. These tests trigger those
+    // errors deliberately, so let the spy capture the report rather than printing it —
+    // stderr noise from a passing test is indistinguishable from a real failure.
+    errorSpy = vi.spyOn(console, 'error').mockImplementation(() => {})
   })
 
   afterEach(() => {
@@ -49,6 +54,8 @@ describe('rotate transport error handling', () => {
     // listener is attached, so this must not throw.
     const err = Object.assign(new Error('boom'), { code: 'EACCES' })
     expect(() => hoisted.out.emit('error', err)).not.toThrow()
+    // Handled means reported, not swallowed.
+    expect(errorSpy).toHaveBeenCalledWith('[@gurupras/log/rotate] log rotation stream error', err)
   })
 
   test('recreates the log directory on an ENOENT during rotation', async () => {
@@ -63,6 +70,7 @@ describe('rotate transport error handling', () => {
     const err = Object.assign(new Error('ENOENT'), { code: 'ENOENT', path: missingFile })
     expect(() => hoisted.out.emit('error', err)).not.toThrow()
     expect(fs.existsSync(logDir)).toBe(true)
+    expect(errorSpy).toHaveBeenCalledWith('[@gurupras/log/rotate] log rotation stream error', err)
   })
 
   test('compress pipeline errors on a missing old file do not crash', async () => {
