@@ -2,7 +2,7 @@ import fs from 'fs'
 import tmp from 'tmp'
 import { Writable } from 'stream'
 import { createLogger, initialize, getRootLogger, defaultTimeFormat } from '../src/log.js'
-import type { Logger } from '../src/log.js'
+import type { Config, Logger } from '../src/log.js'
 import { describe, test, beforeEach, afterEach, expect } from 'vitest'
 import { format, isValid, parse } from 'date-fns'
 
@@ -15,7 +15,7 @@ describe('log', () => {
   let stdoutObj: ReturnType<typeof tmp.fileSync>
   let fileObj: ReturnType<typeof tmp.fileSync>
 
-  function createTestLogger (objectMode: boolean, extraFields?: any) {
+  function createTestLogger (objectMode: boolean, extraFields?: any, extraConfig?: Partial<Config>) {
     stream = new Writable({
       write (chunk, _, next) {
         data.push(chunk)
@@ -38,7 +38,8 @@ describe('log', () => {
         options: {
           destination: fileObj.fd
         }
-      }
+      },
+      ...extraConfig
     })
     log = createLogger(tag, extraFields)
   }
@@ -263,3 +264,22 @@ interface LogMessage extends Record<string, any> {
   level: number
   levelLabel: string
 }
+  describe('mixin', () => {
+    test('Fields from a user-supplied mixin are merged into every record', async () => {
+      createTestLogger(true, undefined, { mixin: () => ({ requestId: 'abc-123' }) })
+      log.info('test')
+      await sync()
+      const [entry] = data
+      // The built-in levelLabel must survive alongside the user's fields.
+      expect(entry).toMatchObject({ msg: 'test', levelLabel: 'info', requestId: 'abc-123' })
+    })
+
+    test('A user-supplied mixin receives the level', async () => {
+      const levels: number[] = []
+      createTestLogger(true, undefined, { mixin: (_context, level) => { levels.push(level); return {} } })
+      log.error('test')
+      await sync()
+      expect(levels).toContain(50)
+    })
+  })
+

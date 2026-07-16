@@ -62,11 +62,12 @@ export interface Config {
     target?: string,
     options: PinoPretty.PrettyOptions
   } | boolean,
-  file?: FileConfig
+  file?: FileConfig,
+  mixin?: (context: object, level: number) => object
 }
 
 function initialize (config: Config = {}) {
-  let { level = 'debug', stdout, file } = config
+  let { level = 'debug', stdout, file, mixin: userMixin } = config
 
   const targets = []
   if (file) {
@@ -98,7 +99,11 @@ function initialize (config: Config = {}) {
   }
   const logger = pino({
     mixin (_context, level) {
-      return { levelLabel: rootLogger.levels.labels[level] }
+      const base = { levelLabel: rootLogger.levels.labels[level] }
+      if (userMixin) {
+        return { ...base, ...userMixin(_context, level) }
+      }
+      return base
     },
     timestamp () {
       const now = format(new Date(), defaultTimeFormat)
