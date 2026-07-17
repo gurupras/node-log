@@ -9,6 +9,42 @@ import { RotateOpts } from './rotate.js'
 // 13:00-23:59 identically to 01:00-11:59, and midnight as 12:00.
 export const defaultTimeFormat = 'yyyy-MM-dd HH:mm:ss.SSS zzzz'
 
+// pino-pretty `translateTime` pattern (dateformat tokens, not date-fns) that mirrors
+// defaultTimeFormat in the console's LOCAL zone. The `SYS:` prefix tells pino-pretty to
+// translate the serialized (UTC) timestamp into system-local time for display, so when
+// the on-disk `time` is a machine/UTC format the console still reads in local time.
+export const defaultStdoutTimeFormat = 'SYS:yyyy-mm-dd HH:MM:ss.l o'
+
+/**
+ * How the serialized `time` field is stamped (what lands in files and every transport).
+ * The process timezone is never changed — only the log representation.
+ *  - `'iso'`   — UTC ISO-8601, e.g. `"2026-07-17T04:12:04.588Z"`. Standard, DST-proof,
+ *                and re-rendered to LOCAL time on the pino-pretty console.
+ *  - `'epoch'` — UTC epoch milliseconds. Also re-rendered to local on the console.
+ *  - `'local'` — legacy human string in the process LOCAL zone
+ *                (`"2026-07-16 20:00:00.000 GMT-04:00"`). Not machine-translatable, so
+ *                the console shows it verbatim.
+ *  - function  — a custom pino timestamp function returning a `,"time":<value>` fragment.
+ */
+export type TimeOption = 'iso' | 'epoch' | 'local' | (() => string)
+
+// Legacy behavior: format `new Date()` in the process-local zone (with a GMT±HH:MM zone).
+function localTimestamp (): string {
+  return `,"time":"${format(new Date(), defaultTimeFormat)}"`
+}
+
+// Resolve a TimeOption into pino's `timestamp` function plus whether the emitted field is
+// a machine format (iso/epoch) that pino-pretty can re-translate for a local console.
+function resolveTimestamp (time: TimeOption): { fn: () => string, machine: boolean } {
+  if (typeof time === 'function') return { fn: time, machine: false }
+  switch (time) {
+    case 'iso': return { fn: pino.stdTimeFunctions.isoTime, machine: true }
+    case 'epoch': return { fn: pino.stdTimeFunctions.epochTime, machine: true }
+    case 'local': return { fn: localTimestamp, machine: false }
+    default: throw new Error(`@gurupras/log: unknown \`time\` option: ${String(time)}`)
+  }
+}
+
 type Level = 'silly' | 'trace' | 'debug' | 'info' | 'warn' | 'error' | 'fatal'
 
 type reverseLog = (msg: string, ...args: any[]) => void
@@ -170,11 +206,19 @@ export interface Config {
     options: PinoPretty.PrettyOptions
   } | boolean,
   file?: FileConfig,
-  mixin?: (context: object, level: number) => object
+  mixin?: (context: object, level: number) => object,
+  /**
+   * How the serialized `time` field is stamped. Defaults to `'iso'` (UTC ISO-8601) so
+   * files/transports carry a standard, DST-proof timestamp regardless of the process
+   * timezone; the pino-pretty console is auto-configured to display it in local time.
+   * Set `'local'` to keep the legacy local-zone human string. See {@link TimeOption}.
+   */
+  time?: TimeOption
 }
 
 function initialize (config: Config = {}) {
-  let { level = 'debug', stdout, file, mixin: userMixin } = config
+  let { level = 'debug', stdout, file, mixin: userMixin, time = 'iso' } = config
+  const { fn: timestampFn, machine: timeIsMachine } = resolveTimestamp(time)
 
   const targets = []
   if (file) {
@@ -196,7 +240,12 @@ function initialize (config: Config = {}) {
       level,
       target: 'pino-pretty',
       options: {
-        singleLine: true
+        singleLine: true,
+        // The on-disk `time` is UTC for machine formats (iso/epoch); translate it back to
+        // system-local time for humans watching the console. For 'local'/custom formats the
+        // field is already a display string, so leave it untouched. A caller-supplied
+        // translateTime (via stdout.options) still wins through the deepmerge below.
+        ...(timeIsMachine ? { translateTime: defaultStdoutTimeFormat } : {})
       }
     }
     if (typeof stdout === 'boolean') {
@@ -212,10 +261,7 @@ function initialize (config: Config = {}) {
       }
       return base
     },
-    timestamp () {
-      const now = format(new Date(), defaultTimeFormat)
-      return `,"time":"${now}"`
-    },
+    timestamp: timestampFn,
     serializers: {
       // pino's default `err` serializer would re-process what the logMethod hook already
       // serialized, flattening the cause chain into the message ('outer: inner'), dropping

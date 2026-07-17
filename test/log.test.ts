@@ -83,12 +83,12 @@ describe('log', () => {
     test('Contains tag', async () => {
       expect(entry.tag).toEqual(tag)
     })
-    test('Contains time', async () => {
-      // date-fns cannot parse the 'zzzz' zone ('GMT-04:00') that defaultTimeFormat emits,
-      // so assert on the datetime portion; the zone suffix is covered by the format itself.
-      const [datetime] = entry.time.split(' GMT')
-      const parsed = parse(datetime, 'yyyy-MM-dd HH:mm:ss.SSS', new Date())
-      expect(isValid(parsed)).toBe(true)
+    test('Contains time (UTC ISO-8601 by default)', async () => {
+      // The default `time` option is 'iso': serialized as UTC ISO-8601 ("...Z").
+      expect(entry.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      expect(isValid(new Date(entry.time))).toBe(true)
+      // ...and it is the current instant, not a stale/wrong-zone value.
+      expect(Math.abs(new Date(entry.time).getTime() - Date.now())).toBeLessThan(60_000)
     })
 
     test('Renders the hour on a 24-hour clock', () => {
@@ -489,6 +489,81 @@ describe('log', () => {
       log.error('test')
       await sync()
       expect(levels).toContain(50)
+    })
+  })
+
+  describe('time (representation / timezone)', () => {
+    test("default 'iso' — serialized time is UTC ISO-8601", async () => {
+      createTestLogger(true)
+      log.info('iso-default')
+      await sync()
+      const entry = data[0] as LogMessage
+      expect(entry.time).toMatch(/^\d{4}-\d{2}-\d{2}T\d{2}:\d{2}:\d{2}\.\d{3}Z$/)
+      expect(Math.abs(new Date(entry.time).getTime() - Date.now())).toBeLessThan(60_000)
+    })
+
+    test("'epoch' — serialized time is UTC epoch milliseconds", async () => {
+      createTestLogger(true, undefined, { time: 'epoch' })
+      log.info('epoch')
+      await sync()
+      const entry = data[0] as LogMessage
+      const t = entry.time as unknown as number
+      expect(typeof t).toBe('number')
+      expect(Math.abs(t - Date.now())).toBeLessThan(60_000)
+    })
+
+    test("'local' — serialized time is the legacy local-zone human string", async () => {
+      createTestLogger(true, undefined, { time: 'local' })
+      log.info('local')
+      await sync()
+      const entry = data[0] as LogMessage
+      // e.g. "2026-07-16 20:00:00.000 GMT-04:00"
+      expect(entry.time).toMatch(/^\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3} GMT[+-]\d{2}:\d{2}$/)
+      const [datetime] = entry.time.split(' GMT')
+      expect(isValid(parse(datetime, 'yyyy-MM-dd HH:mm:ss.SSS', new Date()))).toBe(true)
+    })
+
+    test('custom function is used verbatim', async () => {
+      createTestLogger(true, undefined, { time: () => ',"time":"CUSTOM-TS"' })
+      log.info('custom')
+      await sync()
+      const entry = data[0] as LogMessage
+      expect(entry.time).toBe('CUSTOM-TS')
+    })
+
+    test('unknown option throws', () => {
+      // @ts-expect-error deliberately invalid option
+      expect(() => initialize({ time: 'pacific' })).toThrow(/unknown `time` option/)
+    })
+
+    test('the split: file stores UTC, stdout renders the same instant in LOCAL time', async () => {
+      createTestLogger(true, undefined, { time: 'iso' })
+      log.info('split')
+      await sync() // flushes all transports; reads the FILE into data[0]
+      const fileEntry = data[0] as LogMessage
+      expect(fileEntry.time).toMatch(/Z$/) // file: UTC ISO
+      const fileUtcMs = new Date(fileEntry.time).getTime()
+
+      // stdout: pino-pretty translateTime('SYS:...') renders it in the process-local zone
+      const consoleOut = fs.readFileSync(stdoutObj.name, 'utf-8')
+      const m = consoleOut.match(/(\d{4}-\d{2}-\d{2} \d{2}:\d{2}:\d{2}\.\d{3})/)
+      expect(m).not.toBeNull()
+      // same instant, but formatted in local time (not the raw ISO 'T...Z')
+      expect(m![1]).toBe(format(new Date(fileUtcMs), 'yyyy-MM-dd HH:mm:ss.SSS'))
+      expect(consoleOut).not.toContain(fileEntry.time)
+    })
+
+    test("'local' — console shows the same local time-of-day as the file", async () => {
+      // pino-pretty always prettifies the console timestamp (its own default format); for
+      // 'local' we don't impose SYS translation, but the wall-clock time-of-day must still
+      // line up with the local string the file stores (no accidental double-shift).
+      createTestLogger(true, undefined, { time: 'local' })
+      log.info('local-console')
+      await sync()
+      const fileEntry = data[0] as LogMessage
+      const consoleOut = fs.readFileSync(stdoutObj.name, 'utf-8')
+      const fileLocalTimeOfDay = fileEntry.time.split(' ')[1].slice(0, 12) // "HH:MM:ss.mmm"
+      expect(consoleOut).toContain(fileLocalTimeOfDay)
     })
   })
 
