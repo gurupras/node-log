@@ -43,11 +43,14 @@ The root logger created by `initialize`.
 plain JSON logger drops exactly the two fields you wanted. This library serializes errors before
 they reach the transport, so they survive.
 
-An error passed on its own becomes the `error` field:
+An error passed on its own becomes the `error` field — with or without a message:
 
 ```js
 log.error('request failed', err)
 // { tag, msg: 'request failed', error: { name, message, stack } }
+
+log.error(err)
+// { tag, msg: err.message, error: { name, message, stack } }
 ```
 
 An error under any key of the merge object is serialized in place:
@@ -76,18 +79,44 @@ log.error('request failed', new Error('outer', { cause: new Error('inner') }))
 // error: { name, message: 'outer', stack, cause: { name, message: 'inner', stack } }
 ```
 
+One log call serializes at most **256 error nodes**, however they are linked — causes,
+`AggregateError` trees, error-valued properties. Links beyond that collapse to
+`{ name, message, truncated: true }`. The bound is what makes a log call unable to overflow the
+stack no matter what is thrown at it; a chain that hits it means something is wrapping errors in a
+loop, which the marker itself tells you.
+
+### Printf interpolation
+
+Format tokens use pino's set — `%s` `%d` `%f` `%i` `%o` `%O` `%j`, with `%%` as an escaped
+literal:
+
+```js
+log.info('listening on %s:%d', host, port)
+// msg: 'listening on 0.0.0.0:8080'
+```
+
+One positional rule: an object or Error as the **second argument** always takes the merge-object
+(or `error`) slot — that is this library's core signature — so tokens are fed from the third
+argument on. To interpolate an object into the message, pass context (even `{}`) first:
+
+```js
+log.info('config: %j', config)     // config becomes fields; '%j' stays literal
+log.info('config: %j', {}, config) // msg: 'config: {...}'
+```
+
 ### Errors in any argument position
 
-pino treats everything after the merge object as printf interpolation arguments, so an error there
-is normally discarded unless the message carries a matching format specifier. Errors in third and
-later positions are pulled out and merged instead:
+pino discards any argument past the message's format tokens, so a trailing error would normally
+vanish. Errors beyond the tokens are pulled out and merged instead:
 
 ```js
 log.error('request failed', { requestId }, err)
 // { requestId, error: { name, message, stack } }
 ```
 
-If `error` is already taken, subsequent errors land on `error2`, `error3`, and so on.
+If `error` is already taken, subsequent errors land on `error2`, `error3`, and so on. An error
+*filling* a token is interpolated as asked: `log.error('failed: %s', {}, err)` renders the error
+into the message and does not duplicate it into `error`.
 
 ### Aggregated errors
 

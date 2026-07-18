@@ -77,17 +77,37 @@ export type Logger = {
 
 let rootLogger: Logger
 
+// One serialization walk serializes at most this many Error nodes, however they are linked:
+// cause chains, AggregateError trees, error-valued custom properties. The walk recurses, so
+// without a bound a long non-cyclic chain -- a retry loop wrapping its last failure as
+// `cause` for hours -- overflows the call stack around 10k links, and the RangeError
+// surfaces out of the log call into the caller. The budget bounds recursion depth along
+// with total work (a path cannot be longer than the nodes it spends), so overflow is
+// unrepresentable: the recursion cannot take more steps than this number. 256 full stacks
+// is far beyond diagnostic need; links past the budget collapse to
+// `{ name, message, truncated: true }` -- and the marker itself is a finding, since a chain
+// that long means something is wrapping errors in a loop.
+const MAX_ERROR_NODES = 256
+
+// `seen` tracks the current path for cycle collapse; `budget` is the node allowance above.
+// One walk context is shared across everything reachable from a single serializeError root.
+type ErrorWalk = { seen: Set<Error>, budget: number }
+
 // `message`/`stack` are non-enumerable on Error, so a spread yields `{}` for a stock error.
 // Own-property names catch them along with custom fields (`code`, `statusCode`, ...) whether
 // or not those are enumerable; `name` lives on the prototype, so it is copied separately.
-function serializeError (e: Error, seen = new Set<Error>()): Record<string, any> {
-  if (seen.has(e)) {
+function serializeError (e: Error, walk: ErrorWalk = { seen: new Set(), budget: MAX_ERROR_NODES }): Record<string, any> {
+  if (walk.seen.has(e)) {
     // Already on the path being serialized: a `cause` chain that loops back on itself.
     // Recursing would overflow the stack inside the logger and take down the caller over
     // nothing more than a log line.
     return { name: e.name, message: e.message }
   }
-  seen.add(e)
+  if (walk.budget <= 0) {
+    return { name: e.name, message: e.message, truncated: true }
+  }
+  walk.budget--
+  walk.seen.add(e)
 
   const serialized: Record<string, any> = { name: e.name }
   for (const key of Object.getOwnPropertyNames(e)) {
@@ -102,13 +122,14 @@ function serializeError (e: Error, seen = new Set<Error>()): Record<string, any>
     }
     // Errors hide inside containers too -- AggregateError keeps its sub-errors in `errors`,
     // and those carry the whole diagnostic payload of a Promise.any failure.
-    serialized[key] = replaceErrors(value, 0, seen)
+    serialized[key] = replaceErrors(value, 0, walk)
   }
 
   // Unwind: `seen` tracks the current path, not every error ever visited. Leaving `e` in it
   // would make a second, non-cyclic reference to the same error -- the same root under both
   // `cause` and `originalError`, say -- look like a cycle and silently lose its stack.
-  seen.delete(e)
+  // `budget` is deliberately NOT restored: it counts nodes serialized, not path length.
+  walk.seen.delete(e)
   return serialized
 }
 
@@ -148,10 +169,11 @@ const MAX_ERROR_SCAN_DEPTH = 8
 
 // Copy-on-write. The caller's object is never mutated (logging must not be observable to the
 // code doing the logging), but an object with no Errors in it is returned as-is, so the common
-// case allocates nothing -- including `seen`, which only materializes once an Error is found.
-function replaceErrors (value: any, depth: number, seen?: Set<Error>): any {
+// case allocates nothing -- including the walk context, which only materializes once an Error
+// is found.
+function replaceErrors (value: any, depth: number, walk?: ErrorWalk): any {
   if (value instanceof Error) {
-    return serializeError(value, seen)
+    return serializeError(value, walk)
   }
   if (depth >= MAX_ERROR_SCAN_DEPTH || !isWalkable(value)) {
     return value
@@ -160,7 +182,7 @@ function replaceErrors (value: any, depth: number, seen?: Set<Error>): any {
   if (Array.isArray(value)) {
     let copy = value
     for (let i = 0; i < value.length; i++) {
-      const next = replaceErrors(value[i], depth + 1, seen)
+      const next = replaceErrors(value[i], depth + 1, walk)
       if (next !== value[i]) {
         if (copy === value) {
           copy = shallowCopy(value)
@@ -173,7 +195,7 @@ function replaceErrors (value: any, depth: number, seen?: Set<Error>): any {
 
   let copy = value
   for (const key of Object.keys(value)) {
-    const next = replaceErrors(value[key], depth + 1, seen)
+    const next = replaceErrors(value[key], depth + 1, walk)
     if (next !== value[key]) {
       if (copy === value) {
         copy = shallowCopy(value)
@@ -182,6 +204,24 @@ function replaceErrors (value: any, depth: number, seen?: Set<Error>): any {
     }
   }
   return copy
+}
+
+function serializeIfError (value: any): any {
+  return value instanceof Error ? serializeError(value) : value
+}
+
+// How many arguments the message's printf tokens will consume. pino's formatter
+// (quick-format-unescaped) takes one arg for each of %s %d %f %i %o %O %j; '%%' is an
+// escaped literal '%', stripped first so '%%s' (a literal '%' followed by a token) counts
+// correctly. quick-format also eats an arg for an unrecognized sequence like '%x' while
+// rendering nothing -- that is not honored here, so an Error in such a slot is rescued
+// into the record instead of being silently destroyed.
+function countFormatTokens (msg: any): number {
+  if (typeof msg !== 'string' || !msg.includes('%')) {
+    return 0
+  }
+  const tokens = msg.replace(/%%/g, '').match(/%[sdfiOoj]/g)
+  return tokens === null ? 0 : tokens.length
 }
 
 function createLogger (tag: string, extraFields?: any, options?: ChildLoggerOptions) {
@@ -262,17 +302,22 @@ function initialize (config: Config = {}) {
       return base
     },
     timestamp: timestampFn,
+    // Single-argument calls (`log.error(err)`) bypass the logMethod hook (args.length < 2),
+    // so pino wraps the Error itself — under `error`, matching the key the hook uses for
+    // every other call shape, rather than pino's default `err` split schema.
+    errorKey: 'error',
     serializers: {
-      // pino's default `err` serializer would re-process what the logMethod hook already
+      // pino's default error serializer would re-process what the logMethod hook already
       // serialized, flattening the cause chain into the message ('outer: inner'), dropping
       // the cause object, and labelling it `type: 'Object'` — so it cannot be used as-is.
       //
       // But it cannot simply be replaced with a passthrough either: the hook does not see
-      // every Error that reaches pino. Single-argument calls (`log.error(err)`) return early
-      // from the hook, and child-logger bindings (`createLogger(tag, { err })`) bypass it
-      // altogether. Both arrive here still raw, and a passthrough would JSON-stringify them
-      // to `{}`. Serialize whatever is still an Error; leave the hook's output alone.
-      err: value => value instanceof Error ? serializeError(value) : value
+      // every Error that reaches pino. Single-argument calls arrive under `error` via
+      // errorKey above, and child-logger bindings (`createLogger(tag, { err })`) bypass the
+      // hook altogether. Both arrive here still raw, and a passthrough would JSON-stringify
+      // them to `{}`. Serialize whatever is still an Error; leave the hook's output alone.
+      err: serializeIfError,
+      error: serializeIfError
     },
     transport: {
       targets
@@ -293,30 +338,51 @@ function initialize (config: Config = {}) {
           return method.apply(this, args)
         }
         const msg = args.shift()
-        const rawMergeObj = args.shift()
 
-        // A bare Error becomes the `error` field rather than the merge object itself,
-        // which would otherwise splatter `message`/`stack`/`name` onto the log record.
-        let mergeObj = rawMergeObj instanceof Error
-          ? { error: serializeError(rawMergeObj) }
-          : replaceErrors(rawMergeObj, 0)
+        // Only an object-shaped second argument occupies pino's merge-object slot. A
+        // primitive there is the first printf interpolation arg
+        // (`log.info('hello %s', 'world')`); reordering it into the object slot would
+        // make pino print it as the message.
+        let rawMergeObj: any
+        let mergeObj: any
+        if (args[0] instanceof Error || isPlainObject(args[0])) {
+          rawMergeObj = args.shift()
+          // A bare Error becomes the `error` field rather than the merge object itself,
+          // which would otherwise splatter `message`/`stack`/`name` onto the log record.
+          mergeObj = rawMergeObj instanceof Error
+            ? { error: serializeError(rawMergeObj) }
+            : replaceErrors(rawMergeObj, 0)
+        }
 
-        // pino treats everything past the merge object as printf interpolation args, so an
-        // Error here is dropped unless the message happens to carry a format specifier.
+        // pino hands everything after the merge object to printf interpolation. The first
+        // countFormatTokens(msg) args feed the message's tokens as written -- an Error in a
+        // '%s' slot was asked for as text -- but args beyond the tokens are silently
+        // discarded, and an Error is too important to lose that way: surplus ones are
+        // pulled into the record under `error`, `error2`, ...
+        const tokens = countFormatTokens(msg)
         const rest = []
-        for (const arg of args) {
-          if (arg instanceof Error && isPlainObject(mergeObj)) {
-            if (mergeObj === rawMergeObj) {
+        for (let i = 0; i < args.length; i++) {
+          const arg = args[i]
+          if (arg instanceof Error && i >= tokens) {
+            if (mergeObj === undefined) {
+              mergeObj = {}
+            } else if (mergeObj === rawMergeObj || Array.isArray(mergeObj)) {
+              // Copy before writing (never mutate the caller's object); an array is
+              // remapped to a plain object because JSON drops non-index keys on arrays,
+              // which would silently swallow the swept error.
               mergeObj = { ...mergeObj }
             }
             let key = 'error'
-            for (let i = 2; key in mergeObj; i++) {
-              key = `error${i}`
+            for (let j = 2; key in mergeObj; j++) {
+              key = `error${j}`
             }
             mergeObj[key] = serializeError(arg)
           } else {
             rest.push(arg)
           }
+        }
+        if (mergeObj === undefined) {
+          return method.apply(this, [msg, ...rest])
         }
         return method.apply(this, [mergeObj, msg, ...rest])
       }

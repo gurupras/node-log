@@ -267,6 +267,24 @@ describe('log', () => {
       })
     })
 
+    test('A 50,000-link cause chain cannot overflow the stack or escape the call', async () => {
+      createTestLogger(true)
+      let chain = new Error('leaf')
+      for (let i = 0; i < 50_000; i++) {
+        chain = new Error(`link ${i}`, { cause: chain })
+      }
+      const start = Date.now()
+      // The realistic source is a retry loop wrapping its last failure as `cause` for
+      // hours; the log call must neither throw (RangeError into the caller) nor hang.
+      expect(() => log.error('deep chain', chain)).not.toThrow()
+      expect(Date.now() - start).toBeLessThan(2_000)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.error).toMatchObject({ message: 'link 49999' })
+      // The chain is cut at the node budget with an explicit marker, not silently.
+      expect(JSON.stringify(entry)).toContain('"truncated":true')
+    })
+
     test('A self-referential cause chain does not overflow the stack', async () => {
       createTestLogger(true)
       const error = new Error('loops')
@@ -283,17 +301,19 @@ describe('log', () => {
     test('A bare error logged as the only argument keeps its stack', async () => {
       createTestLogger(true)
       const error = Object.assign(new Error('single arg'), { code: 'E_SINGLE' })
-      // args.length < 2, so the logMethod hook never sees this: pino wraps it as `err`
-      // and applies the serializer directly.
+      // args.length < 2, so the logMethod hook never sees this: pino wraps it via
+      // errorKey ('error' — the same key the hook uses) and applies the serializer.
       log.error(error)
       await sync()
       const [entry] = data as any[]
-      expect(entry.err).toMatchObject({
+      expect(entry.error).toMatchObject({
         name: 'Error',
         message: 'single arg',
         stack: error.stack,
         code: 'E_SINGLE'
       })
+      // The old split schema (`err` for single-arg, `error` everywhere else) must not return.
+      expect(entry.err).toBeUndefined()
     })
 
     test('An error bound into a child logger keeps its stack', async () => {
@@ -470,6 +490,80 @@ describe('log', () => {
         levelLabel: 'error',
         tag
       })
+    })
+  })
+
+  describe('printf interpolation', () => {
+    test('A primitive second argument interpolates instead of replacing the message', async () => {
+      createTestLogger(true)
+      log.info('hello %s', 'world')
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.msg).toBe('hello world')
+    })
+
+    test('Numbers interpolate', async () => {
+      createTestLogger(true)
+      log.info('count is %d of %d', 3, 10)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.msg).toBe('count is 3 of 10')
+    })
+
+    test('A primitive second argument with no matching token never becomes the message', async () => {
+      createTestLogger(true)
+      log.info('no tokens here', 'world')
+      await sync()
+      const [entry] = data as any[]
+      // pino discards the unmatched arg; the message must survive.
+      expect(entry.msg).toBe('no tokens here')
+    })
+
+    test('An error filling a format token is interpolated, not swept', async () => {
+      createTestLogger(true)
+      const error = new Error('token-fill')
+      log.error('failed: %s', { a: 1 }, error)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.msg).toBe(`failed: ${String(error)}`)
+      expect(entry.a).toBe(1)
+      expect(entry.error).toBeUndefined()
+    })
+
+    test('Errors beyond the message tokens are swept into the record', async () => {
+      createTestLogger(true)
+      const error = new Error('surplus')
+      log.error('op %s failed', 'fetch', error)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.msg).toBe('op fetch failed')
+      expect(entry.error).toMatchObject({ message: 'surplus', stack: error.stack })
+    })
+
+    test('An object second argument takes the merge slot; tokens are fed from the third arg on', async () => {
+      createTestLogger(true)
+      // The second-arg-is-context rule wins over interpolation: this is the library's
+      // core signature, so '%j' here stays literal and the object becomes fields...
+      log.info('config: %j', { port: 8080 })
+      // ...and the documented escape hatch is an explicit (even empty) context first.
+      log.info('config: %j', {}, { port: 8080 })
+      await sync(fileObj, false)
+      const lines = (data.join('') as string).trim().split('\n').map(l => JSON.parse(l))
+      expect(lines[0].msg).toBe('config: %j')
+      expect(lines[0].port).toBe(8080)
+      expect(lines[1].msg).toBe('config: {"port":8080}')
+      expect(lines[1].port).toBeUndefined()
+    })
+
+    test('%% is an escaped literal, not a token', async () => {
+      createTestLogger(true)
+      const error = new Error('escaped')
+      // One real token ('%s' after stripping '%%'); the error is surplus and swept.
+      log.error('progress 100%% on %s', 'sync', error)
+      await sync()
+      const [entry] = data as any[]
+      expect(entry.msg).toBe('progress 100% on sync')
+      expect(entry.error).toMatchObject({ message: 'escaped' })
     })
   })
 
