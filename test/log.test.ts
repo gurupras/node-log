@@ -52,8 +52,19 @@ describe('log', () => {
       }
       resolve()
     }))
-    await new Promise(resolve => setTimeout(resolve, 200))
-    let content = fs.readFileSync(tmpObj.name, 'utf-8')
+    // The transport worker writes asynchronously even after flush() resolves, so a fixed
+    // sleep (formerly 200 ms) flaked under CPU contention. Poll until the file has content
+    // and has stopped growing between consecutive reads; every sync() caller logs at least
+    // one line, so waiting for non-empty cannot hang.
+    let content = ''
+    for (let i = 0; i < 100; i++) {
+      await new Promise(resolve => setTimeout(resolve, 50))
+      const next = fs.readFileSync(tmpObj.name, 'utf-8')
+      if (next.length > 0 && next === content) {
+        break
+      }
+      content = next
+    }
     if (objectMode) {
       try {
         content = JSON.parse(content)
